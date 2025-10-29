@@ -1,279 +1,172 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
-import Header from './components/Header';
-import InputArea from './components/InputArea';
-import ResponseDisplay from './components/ResponseDisplay';
-import LoadingSpinner from './components/LoadingSpinner';
-import { getStudyAdvice } from './services/geminiService';
-import type { AdviceResponse } from './types';
-import { FloralVine } from './components/decorations';
-import ColorPicker from './components/ThemeSwitcher';
-import SuggestionPrompts from './components/SuggestionPrompts';
+// gemini-test-score-extractor/App.tsx
 
-// Fix: Add missing SpeechRecognition types for browsers that support it to resolve TypeScript errors.
-interface SpeechRecognitionEvent extends Event {
-  readonly resultIndex: number;
-  readonly results: SpeechRecognitionResultList;
-}
-interface SpeechRecognitionResultList {
-  readonly length: number;
-  item(index: number): SpeechRecognitionResult;
-  [index: number]: SpeechRecognitionResult;
-}
-interface SpeechRecognitionResult {
-  readonly isFinal: boolean;
-  readonly length: number;
-  item(index: number): SpeechRecognitionAlternative;
-  [index: number]: SpeechRecognitionAlternative;
-}
-interface SpeechRecognitionAlternative {
-  readonly transcript: string;
-  readonly confidence: number;
-}
-interface SpeechRecognitionErrorEvent extends Event {
-  error: string;
-}
-interface SpeechRecognition extends EventTarget {
-  continuous: boolean;
-  lang: string;
-  interimResults: boolean;
-  onresult: (event: SpeechRecognitionEvent) => void;
-  onstart: () => void;
-  onend: () => void;
-  onerror: (event: SpeechRecognitionErrorEvent) => void;
-  start(): void;
-  stop(): void;
-}
-type SpeechRecognitionConstructor = new () => SpeechRecognition;
+import React, { useState, useCallback, useRef } from 'react';
+import { extractDataFromImage } from './services/geminiService';
+import { ResultsTable } from './components/ResultsTable';
+import { CsvIcon, SpinnerIcon, UploadIcon } from './components/icons';
+import type { ExtractionResult } from './types';
 
-declare global {
-  interface Window {
-    SpeechRecognition: SpeechRecognitionConstructor;
-    webkitSpeechRecognition: SpeechRecognitionConstructor;
-  }
-}
-
-const hexToRgba = (hex: string, alpha: number): string => {
-    const validHex = /^#([A-Fa-f0-9]{3}){1,2}$/.test(hex);
-    if (!validHex) {
-        return `rgba(96, 165, 250, ${alpha})`; // fallback to a default blue
-    }
-
-    let c = hex.substring(1).split('');
-    if (c.length === 3) {
-        c = [c[0], c[0], c[1], c[1], c[2], c[2]];
-    }
-    const hexValue = '0x' + c.join('');
-    const r = (parseInt(hexValue) >> 16) & 255;
-    const g = (parseInt(hexValue) >> 8) & 255;
-    const b = parseInt(hexValue) & 255;
-
-    return `rgba(${r},${g},${b},${alpha})`;
-};
-
-// Fix: Renamed variable to avoid conflict with the SpeechRecognition interface type.
-const SpeechRecognitionApi = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-const App: React.FC = () => {
-  const [userInput, setUserInput] = useState<string>('');
-  const [advice, setAdvice] = useState<AdviceResponse | null>(null);
+export default function App() {
+  const [files, setFiles] = useState<File[]>([]);
+  const [results, setResults] = useState<ExtractionResult[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [accentColor, setAccentColor] = useState<string>('#60a5fa');
+  const [dragActive, setDragActive] = useState<boolean>(false);
+  const [processingStatus, setProcessingStatus] = useState<string>('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      setFiles(Array.from(e.target.files));
+      setResults([]);
+      setError(null);
+    }
+  };
+
+  const handleDrag = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") {
+      setDragActive(true);
+    } else if (e.type === "dragleave") {
+      setDragActive(false);
+    }
+  };
   
-  const [isListening, setIsListening] = useState<boolean>(false);
-  const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-
-
-  useEffect(() => {
-    const savedColor = localStorage.getItem('study-advisor-color');
-    if (savedColor) {
-      setAccentColor(savedColor);
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      setFiles(Array.from(e.dataTransfer.files));
+      setResults([]);
+      setError(null);
     }
-
-    if (SpeechRecognitionApi) {
-      const recognition = new SpeechRecognitionApi();
-      recognition.continuous = true;
-      recognition.lang = 'vi-VN';
-      recognition.interimResults = true;
-      
-      recognition.onresult = (event) => {
-        let final_transcript = '';
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          if (event.results[i].isFinal) {
-            final_transcript += event.results[i][0].transcript;
-          }
-        }
-        setUserInput(prev => prev + final_transcript);
-      };
-
-      recognition.onstart = () => setIsListening(true);
-      recognition.onend = () => setIsListening(false);
-      recognition.onerror = (event) => {
-        console.error('Speech recognition error', event.error);
-        setIsListening(false);
-      };
-      
-      recognitionRef.current = recognition;
-    }
-
-    // Cleanup speech synthesis on unmount
-    return () => {
-      window.speechSynthesis.cancel();
-    }
-  }, []);
-
-  const handleColorChange = (color: string) => {
-    setAccentColor(color);
-    localStorage.setItem('study-advisor-color', color);
   };
 
-  const handleSubmit = useCallback(async (query?: string) => {
-    const currentQuery = query || userInput;
-    if (!currentQuery.trim() || isLoading) return;
+  const onButtonClick = () => {
+    fileInputRef.current?.click();
+  };
 
+  const handleProcessFiles = useCallback(async () => {
+    if (files.length === 0) return;
     setIsLoading(true);
+    setResults([]);
     setError(null);
-    setAdvice(null);
-    window.speechSynthesis.cancel();
-    setIsSpeaking(false);
-
-    if (!query) {
-      setUserInput(currentQuery);
+    
+    const newResults: ExtractionResult[] = [];
+    for (let i = 0; i < files.length; i++) {
+        setProcessingStatus(`Processing file ${i + 1} of ${files.length}: ${files[i].name}`);
+        const file = files[i];
+        try {
+            const data = await extractDataFromImage(file);
+            newResults.push({
+                status: 'success',
+                fileName: file.name,
+                ten_hoc_sinh: data.ten_hoc_sinh,
+                diem_so: data.diem_so
+            });
+        } catch (err) {
+            newResults.push({
+                status: 'error',
+                fileName: file.name,
+                ten_hoc_sinh: '',
+                diem_so: '',
+                errorMessage: err instanceof Error ? err.message : 'Unknown error'
+            });
+        }
     }
 
+    setResults(newResults);
+    setIsLoading(false);
+    setProcessingStatus('');
+  }, [files]);
 
-    try {
-      const result = await getStudyAdvice(currentQuery);
-      setAdvice(result);
-    } catch (err: unknown) {
-      if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError("Đã có lỗi không xác định xảy ra.");
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  }, [userInput, isLoading]);
-
-  const handleSuggestionSelect = (prompt: string) => {
-      setUserInput(prompt);
-      handleSubmit(prompt);
-  };
-
-  const handleStartListening = () => {
-    if (recognitionRef.current && !isListening) {
-      setUserInput(''); // Clear input before starting
-      recognitionRef.current.start();
-    }
-  };
-
-  const handleStopListening = () => {
-    if (recognitionRef.current && isListening) {
-      recognitionRef.current.stop();
-    }
-  };
-
-  const handlePlaySpeech = (text: string) => {
-    if (isSpeaking) {
-      window.speechSynthesis.cancel();
-      setIsSpeaking(false);
+  const downloadCSV = () => {
+    const successfulResults = results.filter(r => r.status === 'success');
+    if (successfulResults.length === 0) {
+      alert("No successful extractions to download.");
       return;
     }
 
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'vi-VN';
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = (e) => {
-      console.error("Speech synthesis error", e);
-      setIsSpeaking(false);
-    };
-    
-    utteranceRef.current = utterance;
-    window.speechSynthesis.speak(utterance);
+    const headers = ['"ten_hoc_sinh"', '"diem_so"', '"file_name"'];
+    const rows = successfulResults.map(r => 
+      [`"${r.ten_hoc_sinh}"`, `"${r.diem_so}"`, `"${r.fileName}"`].join(',')
+    );
+
+    const csvContent = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', 'diem_so_hoc_sinh.csv');
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
-  const handleStopSpeech = () => {
-    window.speechSynthesis.cancel();
-    setIsSpeaking(false);
-  };
-
-  const backgroundStyle = {
-    background: `linear-gradient(to bottom right, ${hexToRgba(accentColor, 0.15)}, #f8fafc)`,
-  };
-
-  const textColor = 'text-slate-800';
-  const subtleTextColor = 'text-slate-600';
-  const footerTextColor = 'text-slate-500';
+  const hasSuccessfulResults = results.some(r => r.status === 'success');
 
   return (
-    <div style={backgroundStyle} className={`relative min-h-screen font-sans overflow-hidden transition-colors duration-500 ${textColor}`}>
-      <FloralVine 
-        className="absolute top-0 left-0" 
-        startColor={accentColor}
-        endColor="#818cf8"
-        gradientId="top-left-vine"
-      />
-      <FloralVine 
-        className="absolute bottom-0 right-0 transform rotate-180" 
-        startColor={accentColor}
-        endColor="#818cf8"
-        gradientId="bottom-right-vine"
-      />
+    <div className="min-h-screen flex flex-col items-center justify-center p-4 sm:p-6 lg:p-8" onDragEnter={handleDrag}>
+      <main className="w-full max-w-4xl mx-auto bg-white p-6 sm:p-8 lg:p-10 rounded-2xl shadow-lg">
+        <div className="text-center">
+            <h1 className="text-3xl sm:text-4xl font-bold text-slate-800">Trích xuất điểm thi tự động</h1>
+            <p className="mt-2 text-md text-slate-600">Upload images of test papers to extract student names and scores.</p>
+        </div>
 
-      <main className="container mx-auto px-4 py-8 relative z-10">
-        <Header />
-        <InputArea 
-          userInput={userInput}
-          setUserInput={setUserInput}
-          onSubmit={() => handleSubmit()}
-          isLoading={isLoading}
-          isListening={isListening}
-          onStartListening={handleStartListening}
-          onStopListening={handleStopListening}
-        />
-        
         <div className="mt-8">
-          {isLoading && <LoadingSpinner />}
-          {error && (
-            <div className="max-w-2xl mx-auto p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg text-center">
-              <strong>Lỗi:</strong> {error}
+          <form id="form-file-upload" className="relative w-full" onDragEnter={handleDrag} onSubmit={(e) => e.preventDefault()}>
+            <input ref={fileInputRef} type="file" id="input-file-upload" multiple={true} accept="image/png, image/jpeg, image/jpg" className="hidden" onChange={handleFileChange} />
+            <label id="label-file-upload" htmlFor="input-file-upload" className={`h-64 border-2 rounded-lg flex flex-col justify-center items-center cursor-pointer transition-colors ${dragActive ? "border-blue-500 bg-blue-50" : "border-dashed border-slate-300 bg-slate-50 hover:bg-slate-100"}`} onDragLeave={handleDrag} onDragOver={handleDrag} onDrop={handleDrop}>
+                <UploadIcon className="w-12 h-12 text-slate-400 mb-2" />
+                <p className="font-semibold text-slate-700">Drag and drop your files here or</p>
+                <button type="button" onClick={onButtonClick} className="mt-2 rounded-md bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-900 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-slate-50">
+                    Browse Files
+                </button>
+            </label>
+          </form>
+          {files.length > 0 && (
+            <div className="mt-4 text-sm text-slate-600">
+              <p className="font-semibold">Selected Files:</p>
+              <ul className="list-disc list-inside max-h-32 overflow-y-auto mt-1">
+                {files.map((file, i) => <li key={i} className="truncate">{file.name}</li>)}
+              </ul>
             </div>
           )}
-          {advice && (
-            <ResponseDisplay 
-              advice={advice}
-              isSpeaking={isSpeaking}
-              onPlaySpeech={handlePlaySpeech}
-              onStopSpeech={handleStopSpeech}
-            />
-          )}
+        </div>
 
-          {!isLoading && !error && !advice && (
-            <>
-             <div className={`text-center mt-16 max-w-2xl mx-auto ${subtleTextColor}`}>
-                <h2 className={`text-2xl font-semibold mb-4 ${textColor}`}>Chào bạn, tôi có thể giúp gì?</h2>
-                <p>
-                  Hãy cho tôi biết những thách thức bạn đang đối mặt trong học tập, thi cử, hay bất cứ điều gì khiến bạn áp lực.
-                  Tôi sẽ lắng nghe và đưa ra những gợi ý để giúp bạn vượt qua.
-                </p>
-             </div>
-             <SuggestionPrompts onSelect={handleSuggestionSelect} />
-            </>
+        <div className="mt-8 flex flex-col sm:flex-row justify-center items-center gap-4">
+          <button
+            onClick={handleProcessFiles}
+            disabled={files.length === 0 || isLoading}
+            className="w-full sm:w-auto inline-flex items-center justify-center rounded-md bg-blue-600 px-6 py-3 text-sm font-semibold text-white shadow-sm hover:bg-blue-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 disabled:bg-slate-400 disabled:cursor-not-allowed"
+          >
+            {isLoading ? <SpinnerIcon className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" /> : null}
+            {isLoading ? 'Processing...' : `Process ${files.length} File${files.length !== 1 ? 's' : ''}`}
+          </button>
+          
+          {results.length > 0 && hasSuccessfulResults && (
+            <button
+              onClick={downloadCSV}
+              className="w-full sm:w-auto inline-flex items-center justify-center rounded-md bg-green-600 px-6 py-3 text-sm font-semibold text-white shadow-sm hover:bg-green-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-green-600"
+            >
+              <CsvIcon className="h-5 w-5 mr-2" />
+              Download Results (.csv)
+            </button>
           )}
         </div>
+
+        {isLoading && <p className="mt-4 text-center text-sm text-slate-500 animate-pulse">{processingStatus}</p>}
+        {error && <p className="mt-4 text-center text-red-500">{error}</p>}
+        
+        <ResultsTable results={results} />
       </main>
-      <footer className="relative z-10 text-center py-4 text-sm bg-transparent">
-          <div className="flex flex-col items-center gap-4">
-            <ColorPicker color={accentColor} onColorChange={handleColorChange} />
-            <p className={footerTextColor}>Được cung cấp bởi Gemini API</p>
-          </div>
+      <footer className="w-full max-w-4xl mx-auto text-center mt-6">
+        <p className="text-sm text-slate-500">Powered by Google Gemini</p>
       </footer>
     </div>
   );
-};
-
-export default App;
+}
