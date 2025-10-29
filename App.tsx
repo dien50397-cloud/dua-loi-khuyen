@@ -1,7 +1,7 @@
 // gemini-test-score-extractor/App.tsx
 
 import React, { useState, useCallback, useRef } from 'react';
-import { extractDataFromImage } from './services/geminiService';
+import { extractDataFromImage } from './services/geminiService.ts';
 import { ResultsTable } from './components/ResultsTable';
 import { CsvIcon, SpinnerIcon, UploadIcon } from './components/icons';
 import type { ExtractionResult } from './types';
