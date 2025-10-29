@@ -1,0 +1,7 @@
+{
+  "name": "AI Study Advisor",
+  "description": "An AI-powered tool to provide students with guidance on learning strategies, exam preparation, and stress management, helping them learn effectively and without pressure.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
